@@ -44,6 +44,19 @@ class NeuralODE(nn.Module):
     
     def forward(self, t, u0):
         return odeint(self.func, u0, t, method='dopri5')
+    
+# ********************************************************* Helper Functions ****************************************************************** #
+
+def train(model, optimizer, t_span, loss_fn, epochs=300, learning_rate=0.01):
+    for epoch in range(epochs):
+        optimizer.zero_grad()
+        p = odeint(model, y0, t_span)
+        loss = loss_fn(p)
+        loss.backward()
+        optimizer.step()
+        
+        if epoch % 100 == 0:
+            print(f"Epoch {epoch}: Loss = {loss.item()}")
 
 # ********************************************************* Model ****************************************************************** #
 
@@ -144,29 +157,18 @@ spikes_test = np.transpose(spike_times_test, axes=(0, 2, 1))
 #     -10.0 * torch.ones(L_true*N, dtype=torch.float32)
 # ])
 
-def loss_fn(model, u0, t_span, observations, κ=1.0):
-    # u0: Initial conditions, potentially variational parameters
-    # t_span: Time span for the ODE solution
-    # observations: Actual observations to compare against model predictions
-    
-    # Solve the neural ODE
-    u0_m, u0_s = u0  # Split u0 into mean and log-variance (or however they're structured)
-    u0_s = torch.clamp(u0_s, min=-1e8, max=0)  # Clamp the log-variance for numerical stability
-    std = torch.exp(u0_s / 2)
-    eps = torch.randn_like(std)
-    u0_sampled = u0_m + eps * std  # Reparameterization trick for variational inference
-    
-    solution = odeint(model, u0_sampled, t_span)
-    
-    # Calculate the KL divergence
-    kld = 0.5 * torch.sum(κ - u0_s.exp() - 1 + u0_s - u0_m.pow(2) / κ)
-    
-    # Calculate the log likelihood (example using Mean Squared Error)
-    log_likelihood = -torch.mean((solution - observations) ** 2)
-    
-    # ELBO = Log Likelihood - KL Divergence
-    elbo = log_likelihood - kld
-    return -elbo  # Return negative ELBO as the loss
+def loss_nn_ode(p):
+    # Reshape and apply transformations to parameters as needed
+    u0_m = p[-L*N-L*N:-L*N].reshape(L, N)
+    u0_s = torch.clamp(p[-L*N:].reshape(L, N), -1e8, 0)
+    u0s = u0_m + torch.exp(u0_s) * torch.randn_like(u0_s)
+    # Assuming nn_ode and logλ are callable and return tensors
+    z_hat = nn_ode(u0s, p)  # You need to adapt this call to match your neural ODE implementation
+    λ_hat = torch.exp(_logλ(z_hat.view(-1, L), p)).view(D, -1, N)
+    Nlogλ = spikes * torch.log(dt * λ_hat + torch.sqrt(torch.finfo(torch.float32).eps))
+    kld = 0.5 * (N * L * torch.log(torch.tensor(k)) - torch.sum(2.0 * u0_s) - N * L + torch.sum(torch.exp(2.0 * u0_s)) / k + torch.sum(u0_m**2) / k)
+    loss = (torch.sum(dt * λ_hat - Nlogλ) + kld) / N
+    return loss
 
 
 # def cb(p, l):
@@ -174,6 +176,5 @@ def loss_fn(model, u0, t_span, observations, κ=1.0):
 #     return False
 
 # ******************************************************** Training **************************************************************** #
-
 
 # ******************************************************** Testing ***************************************************************** #

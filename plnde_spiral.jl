@@ -74,7 +74,6 @@ spikes_test = permutedims(spike_times_test, (1, 3, 2)) # spike trains [neurons x
 
 
 # ********************************************************** Loss ****************************************************************** #
-
 # Initialize model parameters before training
 θ = Float32[Flux.glorot_uniform(length(_nn_ode.p)); randn(D*(L+1)); randn(L*N); -10 .* ones(L*N)]
 
@@ -111,6 +110,8 @@ References:
 
 _nn_ode = NeuralODE(f, (0.0, 4.0), AutoTsit5(TRBDF2(autodiff=false)), saveat = trange[trange .< 4.], reltol=1e-6, abstol=1e-6)
 res1 = DiffEqFlux.sciml_train(loss_nn_ode, θ, ADAM(0.01), cb = cb, maxiters = 300)
+
+# note from Tiernon: res1.minimzer returns the trained parameters
 
 _nn_ode = NeuralODE(f, (0.0, 8.0), AutoTsit5(TRBDF2(autodiff=false)), saveat = trange[trange .< 8.], reltol=1e-6, abstol=1e-6)
 res2 = DiffEqFlux.sciml_train(loss_nn_ode, res1.minimizer, ADAM(0.005), cb = cb, maxiters = 400)
