@@ -4,7 +4,7 @@ from torchdiffeq import odeint_adjoint as odeint
 import torch.optim as optim
 from scipy.optimize import minimize
 import scipy.stats as stats
-import bson
+from datetime import datetime
 import random
 
 from scipy.integrate import solve_ivp
@@ -174,7 +174,7 @@ spikes_test = np.transpose(spike_times_test, axes=(0, 2, 1))
 ]).requires_grad_(True)
 
 print(θ)
-
+ 
 def loss_nn_ode(p, t):
     u0_m = p[-L*N-L*N:-L*N].reshape(L, N)
     u0_s = torch.clamp(p[-L*N:].reshape(L, N), -1e8, 0)
@@ -195,14 +195,31 @@ def loss_nn_ode(p, t):
 # ******************************************************** Training **************************************************************** #
         
 optimizer = optim.Adam([{"params" : nn_ode.parameters()}, {"params" : θ}, {"params" : _logλ.parameters()}], lr=0.005)
-train_model(θ, optimizer, t, maxiters=10)
+
+# iteratively growing fit
+
+train_model(θ, optimizer, torch.tensor(np.linspace(0, 4, T), dtype=torch.float32), maxiters=5)
+train_model(θ, optimizer, torch.tensor(np.linspace(0, 8, T), dtype=torch.float32), maxiters=5)
+train_model(θ, optimizer, torch.tensor(np.linspace(0, 12, T), dtype=torch.float32), maxiters=5)
+train_model(θ, optimizer, torch.tensor(np.linspace(0, 16, T), dtype=torch.float32), maxiters=5)
+train_model(θ, optimizer, torch.tensor(np.linspace(0, 20, T), dtype=torch.float32), maxiters=5)
+train_model(θ, optimizer, torch.tensor(np.linspace(0, 24, T), dtype=torch.float32), maxiters=5)
+train_model(θ, optimizer, torch.tensor(np.linspace(0, 28, T), dtype=torch.float32), maxiters=5)
+train_model(θ, optimizer, torch.tensor(np.linspace(0, 32, T), dtype=torch.float32), maxiters=5)
+train_model(θ, optimizer, torch.tensor(np.linspace(0, 36, T), dtype=torch.float32), maxiters=5)
+train_model(θ, optimizer, torch.tensor(np.linspace(0, 40, T), dtype=torch.float32), maxiters=5)
+
+torch.save({
+    "nn_ode_state_dict": nn_ode.state_dict(),
+    "log_lambda_state_dict": _logλ.state_dict(),
+    "theta": θ,
+    "optimizer_state_dict": optimizer.state_dict(),
+}, f"./saved_params/saved_params_{datetime.now().date()}.pth")
 
 #TODO 
-# - save nn_ode, theta, and _loglambda
 # - implement testing
 
 # Did theta change:
-
 print(θ)
 
 # ******************************************************** Testing ***************************************************************** #
