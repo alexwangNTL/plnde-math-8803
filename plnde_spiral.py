@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 from torchdiffeq import odeint_adjoint as odeint
+import torch.optim as optim
 from scipy.optimize import minimize
 import scipy.stats as stats
 import bson
@@ -34,7 +35,7 @@ class FeedforwardNN(nn.Module):
             nn.Linear(17, output_size),
         )
         
-    def forward(self, x):
+    def forward(self, t, x):
         return self.network(x)
 
 class NeuralODE(nn.Module):
@@ -43,20 +44,10 @@ class NeuralODE(nn.Module):
         self.func = func
     
     def forward(self, t, u0):
-        return odeint(self.func, u0, t, method='dopri5')
+        return odeint(self.func, y0=u0, t=t, method='dopri5')
     
 # ********************************************************* Helper Functions ****************************************************************** #
 
-def train(model, optimizer, t_span, loss_fn, epochs=300, learning_rate=0.01):
-    for epoch in range(epochs):
-        optimizer.zero_grad()
-        p = odeint(model, y0, t_span)
-        loss = loss_fn(p)
-        loss.backward()
-        optimizer.step()
-        
-        if epoch % 100 == 0:
-            print(f"Epoch {epoch}: Loss = {loss.item()}")
 
 # ********************************************************* Model ****************************************************************** #
 
@@ -82,6 +73,7 @@ nn_ode = NeuralODE(f)
 # For the mapping from latent space to observations
 _logλ_true = nn.Linear(L_true, D)
 _logλ = nn.Linear(L, D)
+logλ = lambda t, z : _logλ(z)
 
 # ***************************************************** Generate data ************************************************************** #
 
@@ -127,7 +119,7 @@ for i in range(N):
 spike_times_disc = spike_times_disc.astype(bool)
 
 ## Rearrange dimensions to get spikes in the format [neurons x trials x timebins]
-spikes = np.transpose(spike_times_disc, (0, 2, 1))
+spikes = torch.tensor(np.transpose(spike_times_disc, (0, 2, 1)))
 
 # Generate initial values for test dataset
 u0s_test = np.random.rand(L_true, N) - 0.5
@@ -150,30 +142,65 @@ spikes_test = np.transpose(spike_times_test, axes=(0, 2, 1))
 # ********************************************************** Loss ****************************************************************** #
 
 # Initialize model parameters
-# θ = torch.cat([
-#     torch.nn.init.xavier_uniform_(torch.empty(length_nn_ode_p, dtype=torch.float32)),
-#     torch.randn(D*(L_true+1), dtype=torch.float32),
-#     torch.randn(L_true*N, dtype=torch.float32),
-#     -10.0 * torch.ones(L_true*N, dtype=torch.float32)
-# ])
 
-def loss_nn_ode(p):
-    # Reshape and apply transformations to parameters as needed
+# THETA := {parameters of f; C; d} where C, d are the poisson parameters
+θ = torch.cat([
+    torch.randn(D*(L_true+1), dtype=torch.float32),
+    torch.randn(L_true*N, dtype=torch.float32),
+    -10.0 * torch.ones(L_true*N, dtype=torch.float32)
+])
+
+# p[1:length(_nn_ode.)] will be handled by torch
+def loss_nn_ode(p, t):
     u0_m = p[-L*N-L*N:-L*N].reshape(L, N)
     u0_s = torch.clamp(p[-L*N:].reshape(L, N), -1e8, 0)
     u0s = u0_m + torch.exp(u0_s) * torch.randn_like(u0_s)
-    # Assuming nn_ode and logλ are callable and return tensors
-    z_hat = nn_ode(u0s, p)  # You need to adapt this call to match your neural ODE implementation
-    λ_hat = torch.exp(_logλ(z_hat.view(-1, L), p)).view(D, -1, N)
-    Nlogλ = spikes * torch.log(dt * λ_hat + torch.sqrt(torch.finfo(torch.float32).eps))
+    
+    z_hat = nn_ode.forward(u0=u0s.T, t=t)
+
+    λ_hat = torch.exp(logλ(None, z_hat.view(-1, L))).view(D, N, -1)
+
+    # Nlogλ = spikes * torch.log(dt * λ_hat + torch.sqrt(torch.finfo(torch.float32).eps))
+    Nlogλ = spikes * torch.log(dt * λ_hat + torch.sqrt(torch.tensor(torch.finfo(torch.float32).eps)))
+
+    
     kld = 0.5 * (N * L * torch.log(torch.tensor(k)) - torch.sum(2.0 * u0_s) - N * L + torch.sum(torch.exp(2.0 * u0_s)) / k + torch.sum(u0_m**2) / k)
+
     loss = (torch.sum(dt * λ_hat - Nlogλ) + kld) / N
     return loss
 
+#TODO tentative training function
 
-# def cb(p, l):
-#     print(l.item())  # Assuming l is a tensor
-#     return False
+def train_model(params, optimizer, t, maxiters=1000, cb=None):
+    """
+    Trains a model using the specified loss function.
+
+    Parameters:
+    - model: The neural ODE model.
+    - params: Initial parameters for the model and the loss function.
+    - optimizer: Optimizer used for training.
+    - data: Iterable of data points (e.g., DataLoader).
+    - maxiters: Maximum number of training iterations.
+    - cb: Optional callback function for custom logic during training.
+    """
+    for iteration in range(maxiters):
+        optimizer.zero_grad()
+        loss = loss_nn_ode(params, t)  # Compute loss
+        loss.backward()  # Backpropagate to compute gradients
+        optimizer.step()  # Update parameters
+        
+        if cb is not None and cb(params, loss):  # Check if the callback triggers stopping
+            print("Early stopping triggered.")
+            break
+
+        if iteration % 100 == 0:  # Adjust logging frequency as needed
+            print(f"Iteration {iteration}: loss {loss.item()}")
+
+# TODO
+# -> training function that takes loss function and theta
+        
+optimizer = optim.Adam([{"params" : nn_ode.parameters()}, {"params" : θ}, {"params" : _logλ.parameters()}], lr=0.005)
+train_model(θ, optimizer, t, maxiters=100)
 
 # ******************************************************** Training **************************************************************** #
 
