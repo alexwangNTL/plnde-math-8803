@@ -47,7 +47,31 @@ class NeuralODE(nn.Module):
         return odeint(self.func, y0=u0, t=t, method='dopri5')
     
 # ********************************************************* Helper Functions ****************************************************************** #
+    
+def train_model(params, optimizer, t, maxiters=1000, cb=None):
+    """
+    Trains a model using the specified loss function.
 
+    Parameters:
+    - model: The neural ODE model.
+    - params: Initial parameters for the model and the loss function.
+    - optimizer: Optimizer used for training.
+    - data: Iterable of data points (e.g., DataLoader).
+    - maxiters: Maximum number of training iterations.
+    - cb: Optional callback function for custom logic during training.
+    """
+    for iteration in range(maxiters):
+        optimizer.zero_grad()
+        loss = loss_nn_ode(params, t)  # Compute loss
+        loss.backward()  # Backpropagate to compute gradients
+        optimizer.step()  # Update parameters
+        
+        if cb is not None and cb(params, loss):  # Check if the callback triggers stopping
+            print("Early stopping triggered.")
+            break
+
+        if iteration % 5 == 0:  # Adjust logging frequency as needed
+            print(f"Iteration {iteration}: loss {loss.item()}")
 
 # ********************************************************* Model ****************************************************************** #
 
@@ -143,14 +167,14 @@ spikes_test = np.transpose(spike_times_test, axes=(0, 2, 1))
 
 # Initialize model parameters
 
-# THETA := {parameters of f; C; d} where C, d are the poisson parameters
 θ = torch.cat([
     torch.randn(D*(L_true+1), dtype=torch.float32),
     torch.randn(L_true*N, dtype=torch.float32),
     -10.0 * torch.ones(L_true*N, dtype=torch.float32)
-])
+]).requires_grad_(True)
 
-# p[1:length(_nn_ode.)] will be handled by torch
+print(θ)
+
 def loss_nn_ode(p, t):
     u0_m = p[-L*N-L*N:-L*N].reshape(L, N)
     u0_s = torch.clamp(p[-L*N:].reshape(L, N), -1e8, 0)
@@ -160,48 +184,26 @@ def loss_nn_ode(p, t):
 
     λ_hat = torch.exp(logλ(None, z_hat.view(-1, L))).view(D, N, -1)
 
-    # Nlogλ = spikes * torch.log(dt * λ_hat + torch.sqrt(torch.finfo(torch.float32).eps))
     Nlogλ = spikes * torch.log(dt * λ_hat + torch.sqrt(torch.tensor(torch.finfo(torch.float32).eps)))
-
     
     kld = 0.5 * (N * L * torch.log(torch.tensor(k)) - torch.sum(2.0 * u0_s) - N * L + torch.sum(torch.exp(2.0 * u0_s)) / k + torch.sum(u0_m**2) / k)
 
     loss = (torch.sum(dt * λ_hat - Nlogλ) + kld) / N
     return loss
 
-#TODO tentative training function
-
-def train_model(params, optimizer, t, maxiters=1000, cb=None):
-    """
-    Trains a model using the specified loss function.
-
-    Parameters:
-    - model: The neural ODE model.
-    - params: Initial parameters for the model and the loss function.
-    - optimizer: Optimizer used for training.
-    - data: Iterable of data points (e.g., DataLoader).
-    - maxiters: Maximum number of training iterations.
-    - cb: Optional callback function for custom logic during training.
-    """
-    for iteration in range(maxiters):
-        optimizer.zero_grad()
-        loss = loss_nn_ode(params, t)  # Compute loss
-        loss.backward()  # Backpropagate to compute gradients
-        optimizer.step()  # Update parameters
-        
-        if cb is not None and cb(params, loss):  # Check if the callback triggers stopping
-            print("Early stopping triggered.")
-            break
-
-        if iteration % 100 == 0:  # Adjust logging frequency as needed
-            print(f"Iteration {iteration}: loss {loss.item()}")
-
-# TODO
-# -> training function that takes loss function and theta
-        
-optimizer = optim.Adam([{"params" : nn_ode.parameters()}, {"params" : θ}, {"params" : _logλ.parameters()}], lr=0.005)
-train_model(θ, optimizer, t, maxiters=100)
 
 # ******************************************************** Training **************************************************************** #
+        
+optimizer = optim.Adam([{"params" : nn_ode.parameters()}, {"params" : θ}, {"params" : _logλ.parameters()}], lr=0.005)
+train_model(θ, optimizer, t, maxiters=10)
+
+#TODO 
+# - save nn_ode, theta, and _loglambda
+# - implement testing
+
+# Did theta change:
+
+print(θ)
 
 # ******************************************************** Testing ***************************************************************** #
+
