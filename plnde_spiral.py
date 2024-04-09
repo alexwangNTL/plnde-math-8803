@@ -61,7 +61,7 @@ class NeuralODE(nn.Module):
     
 # ********************************************************* Helper Functions ****************************************************************** #
     
-def train_model(params, optimizer, t, maxiters=1000, cb=None):
+def train_model(params, optimizer, t, loss_func, maxiters=1000, cb=None):
     """
     Trains a model using the specified loss function.
 
@@ -75,7 +75,7 @@ def train_model(params, optimizer, t, maxiters=1000, cb=None):
     """
     for iteration in range(maxiters):
         optimizer.zero_grad()
-        loss = loss_nn_ode(params["u0_m"], params["u0_s"], t)  # Compute loss
+        loss = loss_func(params["u0_m"], params["u0_s"], t)  # Compute loss
         loss.backward()  # Backpropagate to compute gradients
         optimizer.step()  # Update parameters
         
@@ -178,17 +178,11 @@ for i in range(N):
     rate = dt * np.exp(_logλ_true(_temp_tensor).detach())
     spike_times_test[:, :, i] = (np.random.poisson(rate) > 0).T
 
-spikes_test = np.transpose(spike_times_test, axes=(0, 2, 1))
+spikes_test = torch.tensor(np.transpose(spike_times_test, axes=(0, 2, 1)))
 
 # ********************************************************** Loss ****************************************************************** #
 
 # Initialize model parameters
-
-# θ = torch.cat([
-#     torch.randn(D*(L_true+1), dtype=torch.float32),
-#     torch.randn(L_true*N, dtype=torch.float32),
-#     -10.0 * torch.ones(L_true*N, dtype=torch.float32)
-# ]).requires_grad_(True)
 
 u0_m = torch.randn(L_true*N, dtype=torch.float32, requires_grad=True, device=device)
 u0_s = (-10.0 * torch.ones(L_true*N, dtype=torch.float32)).to(device).requires_grad_(True)
@@ -198,7 +192,9 @@ u0_s = (-10.0 * torch.ones(L_true*N, dtype=torch.float32)).to(device).requires_g
     "u0_s" : u0_s
 }
 
+print(nn_ode.state_dict())
 print(θ)
+print(_logλ.state_dict())
  
 def loss_nn_ode(u0_m, u0_s, t):
     u0_m = u0_m.reshape(L, N)
@@ -219,6 +215,8 @@ def loss_nn_ode(u0_m, u0_s, t):
 
 
 # ******************************************************** Training **************************************************************** #
+print("Begin training...")
+
 nn_ode.to(device).requires_grad_(True)
 _logλ.to(device).requires_grad_(True)
 t = t.to(device)
@@ -229,29 +227,82 @@ optimizer = optim.Adam([{"params" : nn_ode.parameters()}, {"params" : u0_m}, {"p
 
 # iteratively growing fit
 
-train_model(θ, optimizer, torch.tensor(np.linspace(0, 40, T), dtype=torch.float32, device=device), maxiters=2)
-# train_model(θ, optimizer, torch.tensor(np.linspace(0, 8, T), dtype=torch.float32), maxiters=5)
-# train_model(θ, optimizer, torch.tensor(np.linspace(0, 12, T), dtype=torch.float32), maxiters=5)
-# train_model(θ, optimizer, torch.tensor(np.linspace(0, 16, T), dtype=torch.float32), maxiters=5)
-# train_model(θ, optimizer, torch.tensor(np.linspace(0, 20, T), dtype=torch.float32), maxiters=5)
-# train_model(θ, optimizer, torch.tensor(np.linspace(0, 24, T), dtype=torch.float32), maxiters=5)
-# train_model(θ, optimizer, torch.tensor(np.linspace(0, 28, T), dtype=torch.float32), maxiters=5)
-# train_model(θ, optimizer, torch.tensor(np.linspace(0, 32, T), dtype=torch.float32), maxiters=5)
-# train_model(θ, optimizer, torch.tensor(np.linspace(0, 36, T), dtype=torch.float32), maxiters=5)
-# train_model(θ, optimizer, torch.tensor(np.linspace(0, 40, T), dtype=torch.float32), maxiters=5)
+train_model(θ, optimizer, torch.tensor(np.linspace(0, 4, T), dtype=torch.float32, device=device), 
+            loss_nn_ode, maxiters=400)
+train_model(θ, optimizer, torch.tensor(np.linspace(0, 8, T), dtype=torch.float32, device=device), 
+            loss_nn_ode, maxiters=400)
+train_model(θ, optimizer, torch.tensor(np.linspace(0, 12, T), dtype=torch.float32, device=device), 
+            loss_nn_ode, maxiters=400)
+train_model(θ, optimizer, torch.tensor(np.linspace(0, 16, T), dtype=torch.float32, device=device),
+            loss_nn_ode, maxiters=400)
+
+optimizer = optim.Adam([{"params" : nn_ode.parameters()}, {"params" : u0_m}, {"params": u0_s}, {"params" : _logλ.parameters()}], lr=0.001)
+
+
+train_model(θ, optimizer, torch.tensor(np.linspace(0, 20, T), dtype=torch.float32, device=device), 
+            loss_nn_ode, maxiters=400)
+train_model(θ, optimizer, torch.tensor(np.linspace(0, 24, T), dtype=torch.float32, device=device), 
+            loss_nn_ode, maxiters=400)
+train_model(θ, optimizer, torch.tensor(np.linspace(0, 28, T), dtype=torch.float32, device=device), 
+            loss_nn_ode, maxiters=400)
+train_model(θ, optimizer, torch.tensor(np.linspace(0, 32, T), dtype=torch.float32, device=device),
+            loss_nn_ode, maxiters=600)
+train_model(θ, optimizer, torch.tensor(np.linspace(0, 36, T), dtype=torch.float32, device=device), 
+            loss_nn_ode, maxiters=800)
+train_model(θ, optimizer, torch.tensor(np.linspace(0, 40, T), dtype=torch.float32, device=device), 
+            loss_nn_ode, maxiters=100)
+
+torch.save({
+    "nn_ode_state_dict": nn_ode.state_dict(),
+    "log_lambda_state_dict": _logλ.state_dict(),
+    "theta": θ,
+    "spikes" : spikes,
+    "z_true_mat" : z_true_mat,
+    "params_λ_true" : params_λ_true,
+    "optimizer_state_dict": optimizer.state_dict(),
+}, f"./saved_params/training_saved_params_{datetime.now().date()}.pth")
+
+# ******************************************************** Testing ***************************************************************** #
+
+# Redefine the loss such that the generative parameters are frozen and only the variational parameters are optimized
+def loss_nn_ode_test(u0_m, u0_s, t):
+    # Reshape and clamp parts of 'p' to form 'u0_m' and 'u0_s'
+    u0_m = u0_m.reshape(L, N)
+    u0_s = torch.clamp(u0_s.reshape(L, N), -1e8, 0)
+
+    # Generate 'u0s' using 'u0_m' and 'u0_s'
+    u0s = u0_m + torch.exp(u0_s) * torch.randn_like(u0_s)
+
+    # Assuming 'nn_ode.forward' takes 'u0' transposed and 't', and returns a tensor that needs reshaping for 'logλ'
+    z_hat = nn_ode.forward(u0=u0s.T, t=t)
+    λ_hat = torch.exp(logλ(None, z_hat.view(-1, L))).view(D, N, -1)  # Assuming 'D' is defined. Adjust the reshaping based on 'logλ' output.
+
+    # Calculation of Nlogλ, incorporating spikes_test data. Assuming 'spikes_test' is provided in the correct shape and 'dt' is defined
+    sqr = torch.sqrt(torch.tensor(torch.finfo(torch.float32).eps, device=device))
+    Nlogλ = spikes_test * torch.log(dt * λ_hat + sqr)
+
+    # Calculate the KLD part of the loss
+    kld = 0.5 * (N * L * torch.log(torch.tensor(k, device=u0s.device)) - torch.sum(2.0 * u0_s) - N * L + torch.sum(torch.exp(2.0 * u0_s)) / k + torch.sum(u0_m**2) / k)
+
+    # Final loss calculation
+    loss = (torch.sum(dt * λ_hat - Nlogλ) + kld) / N
+    return loss
+
+spikes_test = spikes_test.to(device)
+
+print("Begin testing...")
+
+optimizer = optim.Adam([{"params" : nn_ode.parameters()}, {"params" : u0_m}, {"params": u0_s}, {"params" : _logλ.parameters()}], lr=0.01)
+train_model(θ, optimizer, torch.tensor(np.linspace(0, 40, T), dtype=torch.float32), loss_nn_ode_test, maxiters=100)
+optimizer = optim.Adam([{"params" : nn_ode.parameters()}, {"params" : u0_m}, {"params": u0_s}, {"params" : _logλ.parameters()}], lr=0.001)
+train_model(θ, optimizer, torch.tensor(np.linspace(0, 40, T), dtype=torch.float32), loss_nn_ode_test, maxiters=450)
 
 torch.save({
     "nn_ode_state_dict": nn_ode.state_dict(),
     "log_lambda_state_dict": _logλ.state_dict(),
     "theta": θ,
     "optimizer_state_dict": optimizer.state_dict(),
-}, f"./saved_params/saved_params_{datetime.now().date()}.pth")
-
-#TODO 
-# - implement testing
-
-# Did theta change:
-print(θ)
-
-# ******************************************************** Testing ***************************************************************** #
-
+    "spikes_test" : spikes_test,
+    "z_true_test" : z_true_test,
+    "params_λ_true" : params_λ_true,
+}, f"./saved_params/testing_saved_params_{datetime.now().date()}.pth")
