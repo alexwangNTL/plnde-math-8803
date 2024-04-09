@@ -9,6 +9,8 @@ import random
 
 from scipy.integrate import solve_ivp
 
+import matplotlib.pyplot as plt
+
 random.seed(1)
 np.random.seed(1)
 torch.manual_seed(1)
@@ -21,6 +23,17 @@ from meshgrid import *
 import torch
 import torch.nn as nn
 from torchdiffeq import odeint_adjoint as odeint
+
+
+# if torch.backends.mps.is_available():
+#     device = torch.device("mps")
+# else:
+#     device = torch.device("cpu")
+
+# slow on apple silicon; but we can use this for cuda
+device = torch.device("cpu")
+
+figure_path = "./figures/"
 
 class FeedforwardNN(nn.Module):
     def __init__(self, input_size, output_size):
@@ -44,7 +57,7 @@ class NeuralODE(nn.Module):
         self.func = func
     
     def forward(self, t, u0):
-        return odeint(self.func, y0=u0, t=t, method='dopri5')
+        return odeint(self.func, y0=u0, t=t, method='dopri5', options={"dtype" : torch.float32}).to(device)
     
 # ********************************************************* Helper Functions ****************************************************************** #
     
@@ -62,7 +75,7 @@ def train_model(params, optimizer, t, maxiters=1000, cb=None):
     """
     for iteration in range(maxiters):
         optimizer.zero_grad()
-        loss = loss_nn_ode(params, t)  # Compute loss
+        loss = loss_nn_ode(params["u0_m"], params["u0_s"], t)  # Compute loss
         loss.backward()  # Backpropagate to compute gradients
         optimizer.step()  # Update parameters
         
@@ -129,6 +142,10 @@ for i in range(N):
     sol = solve_ivp(spiral, tspan, u0, method='RK45', t_eval=trange)
     z_true_mat[:, :, i] = sol.y.T
 
+
+# plt.plot(z_true_mat[:,:,0])
+# plt.savefig(f"{figure_path}example.png")
+
 # Generate training dataset spikes from discretized intensity
 ## Initialize the spike times array
 spike_times_disc = np.zeros((D, T, N))
@@ -167,24 +184,33 @@ spikes_test = np.transpose(spike_times_test, axes=(0, 2, 1))
 
 # Initialize model parameters
 
-θ = torch.cat([
-    torch.randn(D*(L_true+1), dtype=torch.float32),
-    torch.randn(L_true*N, dtype=torch.float32),
-    -10.0 * torch.ones(L_true*N, dtype=torch.float32)
-]).requires_grad_(True)
+# θ = torch.cat([
+#     torch.randn(D*(L_true+1), dtype=torch.float32),
+#     torch.randn(L_true*N, dtype=torch.float32),
+#     -10.0 * torch.ones(L_true*N, dtype=torch.float32)
+# ]).requires_grad_(True)
+
+u0_m = torch.randn(L_true*N, dtype=torch.float32, requires_grad=True, device=device)
+u0_s = (-10.0 * torch.ones(L_true*N, dtype=torch.float32)).to(device).requires_grad_(True)
+
+θ = {
+    "u0_m" : u0_m,
+    "u0_s" : u0_s
+}
 
 print(θ)
  
-def loss_nn_ode(p, t):
-    u0_m = p[-L*N-L*N:-L*N].reshape(L, N)
-    u0_s = torch.clamp(p[-L*N:].reshape(L, N), -1e8, 0)
+def loss_nn_ode(u0_m, u0_s, t):
+    u0_m = u0_m.reshape(L, N)
+    u0_s = torch.clamp(u0_s.reshape(L, N), -1e8, 0)
     u0s = u0_m + torch.exp(u0_s) * torch.randn_like(u0_s)
     
     z_hat = nn_ode.forward(u0=u0s.T, t=t)
 
     λ_hat = torch.exp(logλ(None, z_hat.view(-1, L))).view(D, N, -1)
+    sqr = torch.sqrt(torch.tensor(torch.finfo(torch.float32).eps, device=device))
 
-    Nlogλ = spikes * torch.log(dt * λ_hat + torch.sqrt(torch.tensor(torch.finfo(torch.float32).eps)))
+    Nlogλ = spikes * torch.log(dt * λ_hat + sqr)
     
     kld = 0.5 * (N * L * torch.log(torch.tensor(k)) - torch.sum(2.0 * u0_s) - N * L + torch.sum(torch.exp(2.0 * u0_s)) / k + torch.sum(u0_m**2) / k)
 
@@ -193,21 +219,26 @@ def loss_nn_ode(p, t):
 
 
 # ******************************************************** Training **************************************************************** #
-        
-optimizer = optim.Adam([{"params" : nn_ode.parameters()}, {"params" : θ}, {"params" : _logλ.parameters()}], lr=0.005)
+nn_ode.to(device).requires_grad_(True)
+_logλ.to(device).requires_grad_(True)
+t = t.to(device)
+spikes = spikes.to(device)
+
+
+optimizer = optim.Adam([{"params" : nn_ode.parameters()}, {"params" : u0_m}, {"params": u0_s}, {"params" : _logλ.parameters()}], lr=0.005)
 
 # iteratively growing fit
 
-train_model(θ, optimizer, torch.tensor(np.linspace(0, 4, T), dtype=torch.float32), maxiters=5)
-train_model(θ, optimizer, torch.tensor(np.linspace(0, 8, T), dtype=torch.float32), maxiters=5)
-train_model(θ, optimizer, torch.tensor(np.linspace(0, 12, T), dtype=torch.float32), maxiters=5)
-train_model(θ, optimizer, torch.tensor(np.linspace(0, 16, T), dtype=torch.float32), maxiters=5)
-train_model(θ, optimizer, torch.tensor(np.linspace(0, 20, T), dtype=torch.float32), maxiters=5)
-train_model(θ, optimizer, torch.tensor(np.linspace(0, 24, T), dtype=torch.float32), maxiters=5)
-train_model(θ, optimizer, torch.tensor(np.linspace(0, 28, T), dtype=torch.float32), maxiters=5)
-train_model(θ, optimizer, torch.tensor(np.linspace(0, 32, T), dtype=torch.float32), maxiters=5)
-train_model(θ, optimizer, torch.tensor(np.linspace(0, 36, T), dtype=torch.float32), maxiters=5)
-train_model(θ, optimizer, torch.tensor(np.linspace(0, 40, T), dtype=torch.float32), maxiters=5)
+train_model(θ, optimizer, torch.tensor(np.linspace(0, 40, T), dtype=torch.float32, device=device), maxiters=2)
+# train_model(θ, optimizer, torch.tensor(np.linspace(0, 8, T), dtype=torch.float32), maxiters=5)
+# train_model(θ, optimizer, torch.tensor(np.linspace(0, 12, T), dtype=torch.float32), maxiters=5)
+# train_model(θ, optimizer, torch.tensor(np.linspace(0, 16, T), dtype=torch.float32), maxiters=5)
+# train_model(θ, optimizer, torch.tensor(np.linspace(0, 20, T), dtype=torch.float32), maxiters=5)
+# train_model(θ, optimizer, torch.tensor(np.linspace(0, 24, T), dtype=torch.float32), maxiters=5)
+# train_model(θ, optimizer, torch.tensor(np.linspace(0, 28, T), dtype=torch.float32), maxiters=5)
+# train_model(θ, optimizer, torch.tensor(np.linspace(0, 32, T), dtype=torch.float32), maxiters=5)
+# train_model(θ, optimizer, torch.tensor(np.linspace(0, 36, T), dtype=torch.float32), maxiters=5)
+# train_model(θ, optimizer, torch.tensor(np.linspace(0, 40, T), dtype=torch.float32), maxiters=5)
 
 torch.save({
     "nn_ode_state_dict": nn_ode.state_dict(),

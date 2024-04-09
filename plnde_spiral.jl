@@ -153,6 +153,7 @@ BSON.@save "spiral_fit_train_PLNDE.bson" θ_opt spikes z_true_mat params_λ_true
 function loss_nn_ode(p)
     u0_m = reshape(p[end-L*N-L*N+1:end-L*N], L, :)
     u0_s = clamp.(reshape(p[end-L*N+1:end], L, :), -1e8, 0)
+
     u0s1 = u0_m .+ exp.(u0_s) .* randn(size(u0_s))
     kld = 0.5 .* (N .* L .* log(κ) .- sum(2 .* u0_s) - N .* L .+ sum(exp.(2 .* u0_s)) ./ κ .+ sum(abs2, u0_m) ./ κ)
     z_hat = Array(nn_ode(u0s1, θ_opt))
